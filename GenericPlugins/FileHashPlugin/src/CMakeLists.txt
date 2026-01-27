@@ -1,0 +1,1 @@
+target_sources(FileHashPlugin PRIVATE FileHashPlugin.cpp)

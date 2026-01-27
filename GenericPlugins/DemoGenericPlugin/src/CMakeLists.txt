@@ -1,0 +1,1 @@
+target_sources(DemoPluginGeneric PRIVATE DemoPluginGeneric.cpp)

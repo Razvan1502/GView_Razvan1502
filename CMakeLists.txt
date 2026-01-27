@@ -205,6 +205,8 @@ if(NOT DEFINED CMAKE_TESTING_ENABLED)
 
     # Generic plugins supported by GView
     add_subdirectory(GenericPlugins)
+    add_subdirectory(GenericPlugins/DemoGenericPlugin)
+    add_subdirectory(GenericPlugins/FileHashPlugin)
                                     
     if (APPLE)
             set_property(TARGET "${PROJECT_NAME}" PROPERTY INSTALL_RPATH "@loader_path")
