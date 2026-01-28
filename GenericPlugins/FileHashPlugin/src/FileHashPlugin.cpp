@@ -1,5 +1,6 @@
 #include "FileHashPlugin.hpp"
 
+
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <iomanip>
@@ -15,7 +16,7 @@ using namespace AppCUI::Controls;
 using namespace GView::Utils;
 using namespace GView;
 
-// --- REZOLVARE CONFLICTE WINDOWS (CRITIC) ---
+// --- REZOLVARE CONFLICTE WINDOWS ---
 #ifdef MessageBox
 #    undef MessageBox
 #endif
@@ -30,13 +31,14 @@ using namespace GView;
 // --------------------------------------------
 
 // --- API KEY VIRUS TOTAL ---
-// Inlocuieste cu cheia ta reala
+// Cheia ta actuala (Asigura-te ca nu o distribui public daca e privata)
 const std::string VT_API_KEY = "cb9c943d76722f2cd8f91f37c5bb57e2122028b296ad0e0bc849e14a7d2316ee";
 
-constexpr int CMD_CHECK_VT = 1;
-constexpr int CMD_CLOSE    = 2;
+constexpr int CMD_CHECK_VT  = 1;
+constexpr int CMD_CLOSE     = 2;
+constexpr int CMD_UPLOAD_VT = 3; // Comanda noua pentru upload
 
-// --- IMPLEMENTARE SIMPLA SHA256 (Stand-alone) ---
+// --- IMPLEMENTARE SHA256 ---
 class SimpleSHA256
 {
     uint32_t state[8];
@@ -134,7 +136,6 @@ class SimpleSHA256
     std::string final()
     {
         uint32_t i = datalen;
-
         if (datalen < 56) {
             data[i++] = 0x80;
             while (i < 56)
@@ -146,7 +147,6 @@ class SimpleSHA256
             transform();
             memset(data, 0, 56);
         }
-
         bitlen += datalen * 8;
         data[63] = bitlen;
         data[62] = bitlen >> 8;
@@ -159,9 +159,8 @@ class SimpleSHA256
         transform();
 
         std::stringstream res;
-        for (int k = 0; k < 8; k++) {
+        for (int k = 0; k < 8; k++)
             res << std::hex << std::setw(8) << std::setfill('0') << state[k];
-        }
         return res.str();
     }
 };
@@ -193,9 +192,15 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
 
         listView = Factory::ListView::Create(this, "t:4,l:2,b:4,r:2", { "n:Engine,a:l,w:20", "n:Category,a:l,w:15", "n:Result,a:l,w:30" });
 
+        // Buton Check
         auto btnCheck                         = Factory::Button::Create(this, "&Check VirusTotal", "b:1,l:2,w:25", CMD_CHECK_VT);
         btnCheck->Handlers()->OnButtonPressed = this;
 
+        // Buton Upload (NOU)
+        auto btnUpload                         = Factory::Button::Create(this, "&Upload File", "b:1,l:30,w:25", CMD_UPLOAD_VT);
+        btnUpload->Handlers()->OnButtonPressed = this;
+
+        // Buton Close
         auto btnClose                         = Factory::Button::Create(this, "&Close", "b:1,r:2,w:15", CMD_CLOSE);
         btnClose->Handlers()->OnButtonPressed = this;
     }
@@ -204,19 +209,13 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
     {
         auto& dataCache = obj->GetData();
         uint64 size     = dataCache.GetSize();
-
         SimpleSHA256 sha;
-
         uint64 offset    = 0;
         uint32 chunkSize = 4096;
 
         while (offset < size) {
-            // AICI ERA EROAREA: std::min intra in conflict cu macroul min din windows
-            // Solutie: (std::min)(...) sau #undef min
             uint32 currentRead = (uint32) (std::min) ((uint64) chunkSize, size - offset);
-
-            auto bufferView = dataCache.Get(offset, currentRead, false);
-
+            auto bufferView    = dataCache.Get(offset, currentRead, false);
             if (bufferView.IsValid()) {
                 sha.update(bufferView.GetData(), currentRead);
             } else {
@@ -224,14 +223,13 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
             }
             offset += currentRead;
         }
-
         return sha.final();
     }
 
     void CheckVirusTotal()
     {
         if (VT_API_KEY.find("INTRODU") != std::string::npos) {
-            AppCUI::Dialogs::MessageBox::ShowError("Error", "Te rog modifica variabila VT_API_KEY in cod!");
+            AppCUI::Dialogs::MessageBox::ShowError("Error", "Configurati API Key-ul!");
             return;
         }
 
@@ -261,6 +259,88 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
         }
     }
 
+    void UploadToVirusTotal()
+    {
+        if (VT_API_KEY.find("INTRODU") != std::string::npos) {
+            AppCUI::Dialogs::MessageBox::ShowError("Error", "Configurati API Key-ul!");
+            return;
+        }
+
+        // Limita de siguranta: 32MB pentru upload simplu
+        uint64 fSize = obj->GetData().GetSize();
+        if (fSize > 32 * 1024 * 1024) {
+            AppCUI::Dialogs::MessageBox::ShowError("Upload Error", "Fisierul este prea mare (>32MB) pentru acest plugin simplu!");
+            return;
+        }
+
+        CURL* curl;
+        CURLcode res;
+        std::string readBuffer;
+
+        curl = curl_easy_init();
+        if (curl) {
+            // URL pentru upload
+            std::string url = "https://www.virustotal.com/api/v3/files";
+
+            // Pregatim buffer-ul cu tot fisierul
+            auto bufferView = obj->GetData().Get(0, (uint32) fSize, false);
+            if (!bufferView.IsValid()) {
+                AppCUI::Dialogs::MessageBox::ShowError("Read Error", "Nu am putut citi fisierul din memorie.");
+                return;
+            }
+
+            // Headers
+            struct curl_slist* headers = NULL;
+            headers                    = curl_slist_append(headers, ("x-apikey: " + VT_API_KEY).c_str());
+
+            // Form data (multipart)
+            curl_mime* form      = NULL;
+            curl_mimepart* field = NULL;
+
+            form = curl_mime_init(curl);
+
+            // Adaugam fisierul
+            field = curl_mime_addpart(form);
+            curl_mime_name(field, "file");
+            curl_mime_data(field, (const char*) bufferView.GetData(), bufferView.GetLength());
+            curl_mime_filename(field, "scan_sample.bin"); // Nume generic pentru upload
+
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_MIMEPOST, form); // Setam POST-ul multipart
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+
+            res = curl_easy_perform(curl);
+
+            if (res != CURLE_OK) {
+                AppCUI::Dialogs::MessageBox::ShowError("CURL Error", curl_easy_strerror(res));
+            } else {
+                // Verificam raspunsul la upload
+                try {
+                    auto json = nlohmann::json::parse(readBuffer);
+                    if (json.contains("data") && json["data"].contains("id")) {
+                        std::string analysisId = json["data"]["id"];
+                        std::string msg =
+                              "Fisier uploadat cu succes!\nAnalysis ID: " + analysisId + "\n\nAsteapta cateva secunde si apasa 'Check VirusTotal' din nou.";
+                        AppCUI::Dialogs::MessageBox::ShowNotification("Success", msg.c_str());
+                    } else if (json.contains("error")) {
+                        std::string msg = json["error"]["message"];
+                        AppCUI::Dialogs::MessageBox::ShowError("Upload Failed", msg.c_str());
+                    } else {
+                        AppCUI::Dialogs::MessageBox::ShowError("Info", "Raspuns necunoscut de la server.");
+                    }
+                } catch (...) {
+                    AppCUI::Dialogs::MessageBox::ShowError("Error", "Eroare la parsarea raspunsului de upload.");
+                }
+            }
+
+            curl_easy_cleanup(curl);
+            curl_mime_free(form);
+        }
+    }
+
     void ParseVTResponse(const std::string& jsonData)
     {
         try {
@@ -268,26 +348,39 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
 
             if (json.contains("error")) {
                 std::string msg = json["error"]["message"];
-                AppCUI::Dialogs::MessageBox::ShowError("VT Error", msg.c_str());
+                // Daca eroarea este "NotFoundError", sugeram upload
+                if (json["error"]["code"] == "NotFoundError") {
+                    AppCUI::Dialogs::MessageBox::ShowWarning(
+                          "Not Found", "Fisierul nu este in baza de date.\nFoloseste butonul 'Upload File' pentru a-l scana.");
+                } else {
+                    AppCUI::Dialogs::MessageBox::ShowError("VT Error", msg.c_str());
+                }
                 return;
             }
 
             listView->DeleteAllItems();
 
             if (!json.contains("data") || !json["data"].contains("attributes")) {
-                AppCUI::Dialogs::MessageBox::ShowWarning("Info", "File not found in VirusTotal database.");
+                AppCUI::Dialogs::MessageBox::ShowWarning("Info", "Nu s-au gasit atribute pentru acest fisier.");
                 return;
             }
 
-            auto results = json["data"]["attributes"]["last_analysis_results"];
+            // Verificam statusul analizei (poate fi "queued" sau "in_progress" imediat dupa upload)
+            /* Nota: In API v3 /files/{hash} returneaza raportul cache-uit.
+               Daca tocmai l-ai uploadat, e posibil sa dureze pana apare raportul final. */
 
-            for (auto it = results.begin(); it != results.end(); ++it) {
-                auto engine          = it.value();
-                std::string name     = it.key();
-                std::string category = engine["category"];
-                std::string result   = engine["result"].is_null() ? "clean" : engine["result"].get<std::string>();
+            if (json["data"]["attributes"].contains("last_analysis_results")) {
+                auto results = json["data"]["attributes"]["last_analysis_results"];
+                for (auto it = results.begin(); it != results.end(); ++it) {
+                    auto engine          = it.value();
+                    std::string name     = it.key();
+                    std::string category = engine["category"];
+                    std::string result   = engine["result"].is_null() ? "clean" : engine["result"].get<std::string>();
 
-                listView->AddItem({ name, category, result });
+                    listView->AddItem({ name, category, result });
+                }
+            } else {
+                AppCUI::Dialogs::MessageBox::ShowNotification("Info", "Analiza este inca in desfasurare sau nu exista rezultate detaliate.");
             }
 
         } catch (const std::exception& e) {
@@ -297,10 +390,16 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
 
     void OnButtonPressed(Reference<Button> btn) override
     {
-        if (btn->GetControlID() == CMD_CHECK_VT) {
+        switch (btn->GetControlID()) {
+        case CMD_CHECK_VT:
             CheckVirusTotal();
-        } else if (btn->GetControlID() == CMD_CLOSE) {
+            break;
+        case CMD_UPLOAD_VT:
+            UploadToVirusTotal();
+            break;
+        case CMD_CLOSE:
             Exit();
+            break;
         }
     }
 };
