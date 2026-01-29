@@ -16,7 +16,6 @@ using namespace AppCUI::Controls;
 using namespace GView::Utils;
 using namespace GView;
 
-// --- REZOLVARE CONFLICTE WINDOWS ---
 #ifdef MessageBox
 #    undef MessageBox
 #endif
@@ -26,16 +25,13 @@ using namespace GView;
 #ifdef max
 #    undef max
 #endif
-// ------------------------------------
 
-// --- API KEY VIRUS TOTAL ---
 const std::string VT_API_KEY = "cb9c943d76722f2cd8f91f37c5bb57e2122028b296ad0e0bc849e14a7d2316ee";
 
 constexpr int CMD_CHECK_VT  = 1;
 constexpr int CMD_CLOSE     = 2;
 constexpr int CMD_UPLOAD_VT = 3;
 
-// Callback pentru CURL
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp)
 {
     ((std::string*) userp)->append((char*) contents, size * nmemb);
@@ -54,7 +50,6 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
     {
         obj = _obj;
 
-        // Calculam SHA256 folosind OpenSSL
         this->fileHash = CalculateSHA256();
 
         Factory::Label::Create(this, "File Hash (SHA256):", "t:1,l:2,w:20");
@@ -77,8 +72,7 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
         auto& dataCache = obj->GetData();
         uint64 size     = dataCache.GetSize();
 
-        // --- LOGICA OPENSSL ---
-        unsigned char hash[SHA256_DIGEST_LENGTH]; // Buffer pentru hash-ul final (32 bytes)
+        unsigned char hash[SHA256_DIGEST_LENGTH]; 
         SHA256_CTX sha256;
         SHA256_Init(&sha256);
 
@@ -90,7 +84,6 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
             auto bufferView    = dataCache.Get(offset, currentRead, false);
 
             if (bufferView.IsValid()) {
-                // Update hash cu bucata curenta
                 SHA256_Update(&sha256, bufferView.GetData(), currentRead);
             } else {
                 return "Error_Reading_File";
@@ -98,10 +91,8 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
             offset += currentRead;
         }
 
-        // Finalizare hash
         SHA256_Final(hash, &sha256);
 
-        // Conversie la string Hexazecimal
         std::stringstream ss;
         for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
             ss << std::hex << std::setw(2) << std::setfill('0') << (int) hash[i];
@@ -111,7 +102,6 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
 
     void CheckVirusTotal()
     {
-        // ... (restul codului ramane identic cu cel anterior pt CURL) ...
         if (VT_API_KEY.find("INTRODU") != std::string::npos) {
             AppCUI::Dialogs::MessageBox::ShowError("Error", "Configurati API Key-ul!");
             return;
@@ -145,7 +135,6 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
 
     void UploadToVirusTotal()
     {
-        // ... (Codul de Upload este identic cu cel din raspunsul anterior) ...
         if (VT_API_KEY.find("INTRODU") != std::string::npos) {
             AppCUI::Dialogs::MessageBox::ShowError("Error", "Configurati API Key-ul!");
             return;
@@ -230,17 +219,14 @@ class HashFileWindow : public Window, public Handlers::OnButtonPressedInterface
                 for (auto it = results.begin(); it != results.end(); ++it) {
                     auto engine = it.value();
 
-                    // --- FIX AICI: Extragem explicit string-urile ---
                     std::string name     = it.key();
-                    std::string category = engine["category"].get<std::string>(); // Conversie explicita
+                    std::string category = engine["category"].get<std::string>();
                     std::string result   = engine["result"].is_null() ? "clean" : engine["result"].get<std::string>();
 
-                    // Acum compilatorul stie exact tipurile
                     listView->AddItem({ name, category, result });
                 }
             }
         } catch (const std::exception& e) {
-            // E bine sa prinzi exceptia cu nume pentru a vedea eroarea daca apare
             AppCUI::Dialogs::MessageBox::ShowError("JSON Error", e.what());
         } catch (...) {
             AppCUI::Dialogs::MessageBox::ShowError("Error", "Unknown error parsing JSON");
